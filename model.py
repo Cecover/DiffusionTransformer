@@ -407,4 +407,6 @@ nn.init.constant_(final.AdaptiveLN[-1].bias, 0)
 nn.init.constant_(final.linear.weight, 0)
 nn.init.constant_(final.linear.bias, 0)
 
-print("Final final shape: ", final(result, c).shape)
+print("Final shape: ", final(result, c).shape)
+
+# Mfw I need to do this because the author does not give out the expected tensor sizes
