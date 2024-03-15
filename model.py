@@ -233,8 +233,8 @@ class Attention(nn.Module):
         )  # B * T * (N*D)
 
         """
-        Expected input shape: [batch size, channels, height * width]
-        Expected output shape: [batch size, channels, height * width]
+        Expected input shape: [batch size, token size, hidden dimension]
+        Expected output shape: [batch size, token size, hidden dimension]
         
         Output of this needs to have [0] on the back since it was a tuple object. 
         [0] returns the actual end value
@@ -285,8 +285,8 @@ class AttentionPerceptron(nn.Module):
         x = self.drop2(x)
 
         """
-        Expected input shape: [batch size, channels, height * width]
-        Expected output shape: [batch size, channels, height * width]
+        Expected input shape: [batch size, token size, hidden dimension]
+        Expected output shape: [batch size, token size, hidden dimension]
         """
 
         return x
@@ -348,9 +348,9 @@ class DiffusionTransformer(nn.Module):
         x = x + mlp_gate.unsqueeze(1) * self.perceptron(perceptron_input)
 
         """
-        Expected x shape: [batch size, channels, height * width]
+        Expected x shape: [batch size, token size, hidden dimension]
         Expected c shape: [tensor, hidden_size] (please refer to LabelEmbedding and TimestepEmbedder)
-        Expected output shape: [batch size, channels, height * width]
+        Expected output shape: [batch size, token size, hidden dimension]
         """
 
         return x
@@ -377,9 +377,9 @@ class FinalLayer(nn.Module):
         x = self.linear(x)
 
         """
-        Expected x shape: [batch size, channels, height * width]
+        Expected x shape: [batch size, token size, hidden dimension]
         Expected c shape: [tensor, hidden_size] (please refer to LabelEmbedding and TimestepEmbedder)
-        Expected output shape: [batch size, channels, height * width]
+        Expected output shape: [batch size, token size, hidden dimension]
         """
 
         return x
