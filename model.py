@@ -43,39 +43,48 @@ to_2tuple = n_tuples(2)
 
 # ===== Embedding Layers =====
 
+
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timestep into a vector representation
     """
 
-    def __init__(self,
-                 timestep_hidden_size: int,
-                 frequency_embedding_size: int,
-                 perceptron_bias: bool):
+    def __init__(
+        self,
+        timestep_hidden_size: int,
+        frequency_embedding_size: int,
+        perceptron_bias: bool,
+    ):
         super().__init__()
 
         self.frequency_embedding_size = frequency_embedding_size
 
         self.perceptron = nn.Sequential(
-            nn.Linear(frequency_embedding_size, timestep_hidden_size, bias=perceptron_bias),
+            nn.Linear(
+                frequency_embedding_size, timestep_hidden_size, bias=perceptron_bias
+            ),
             nn.SiLU(),
-            nn.Linear(timestep_hidden_size, timestep_hidden_size, bias=perceptron_bias)
+            nn.Linear(timestep_hidden_size, timestep_hidden_size, bias=perceptron_bias),
         )
 
     @staticmethod
-    def time_stepper(tensor: torch.Tensor,
-                     embedding_size: int,
-                     max_period: int = 10000):
+    def time_stepper(
+        tensor: torch.Tensor, embedding_size: int, max_period: int = 10000
+    ):
         half = embedding_size // 2
-        frequency = torch.exp(-math.log(max_period) * torch.arange(start=0,
-                                                                   end=half,
-                                                                   dtype=torch.float32) / half)
+        frequency = torch.exp(
+            -math.log(max_period)
+            * torch.arange(start=0, end=half, dtype=torch.float32)
+            / half
+        )
         frequency.to(device=tensor.device)  # MUST
         args = tensor[:, None].float() * frequency[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
         if embedding_size % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+            embedding = torch.cat(
+                [embedding, torch.zeros_like(embedding[:, :1])], dim=-1
+            )
 
         return embedding
 
@@ -98,17 +107,16 @@ class LabelEmbedder(nn.Module):
     Code also handles label dropout for classifier-free guidance
     """
 
-    def __init__(self,
-                 num_classes: int,
-                 hidden_size: int,
-                 dropout_prob: float):
+    def __init__(self, num_classes: int, hidden_size: int, dropout_prob: float):
         super().__init__()
 
         use_config_embedding = dropout_prob > 0
 
         self.num_classes = num_classes
         self.dropout_prob = dropout_prob
-        self.embedding_table = nn.Embedding(num_classes + use_config_embedding, hidden_size)
+        self.embedding_table = nn.Embedding(
+            num_classes + use_config_embedding, hidden_size
+        )
 
     def token_dropper(self, labels: torch.Tensor):
         """
@@ -139,6 +147,7 @@ class LabelEmbedder(nn.Module):
 
 # ===== Core Diffusion Transformer Model =====
 
+
 class Attention(nn.Module):
     """
     Modularized Attention mechanism, so it is easier to be modified on later uses
@@ -147,52 +156,81 @@ class Attention(nn.Module):
     Code reference: https://github.com/sooftware/attentions/blob/master/attentions.py
     """
 
-    def __init__(self,
-                 attention_dimension: int,
-                 attention_heads: int):
+    def __init__(self, attention_dimension: int, attention_heads: int):
         super().__init__()
 
-        assert attention_dimension % attention_heads == 0, "Attention dimension and head size must be divisible!"
+        assert (
+            attention_dimension % attention_heads == 0
+        ), "Attention dimension and head size must be divisible!"
 
         self.num_heads = attention_heads
         self.div_dimension = int(attention_dimension / attention_heads)
 
-        self.query_projection = nn.Linear(attention_dimension, self.num_heads * self.div_dimension)
-        self.key_projection = nn.Linear(attention_dimension, self.num_heads * self.div_dimension)
-        self.value_projection = nn.Linear(attention_dimension, self.num_heads * self.div_dimension)
+        self.query_projection = nn.Linear(
+            attention_dimension, self.num_heads * self.div_dimension
+        )
+        self.key_projection = nn.Linear(
+            attention_dimension, self.num_heads * self.div_dimension
+        )
+        self.value_projection = nn.Linear(
+            attention_dimension, self.num_heads * self.div_dimension
+        )
 
-    def forward(self,
-                query: torch.Tensor,
-                key: torch.Tensor,
-                value: torch.Tensor,
-                mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         batch_size = value.size(0)
 
-        query = (self.query_projection(query)
-                 .view(batch_size, -1, self.num_heads, self.div_dimension))  # B * Q_len * H * D
-        key = (self.query_projection(key)
-               .view(batch_size, -1, self.num_heads, self.div_dimension))  # B * K_len * H * D
-        value = (self.query_projection(value)
-                 .view(batch_size, -1, self.num_heads, self.div_dimension))  # B * V_len * H * D
+        query = self.query_projection(query).view(
+            batch_size, -1, self.num_heads, self.div_dimension
+        )  # B * Q_len * H * D
+        key = self.query_projection(key).view(
+            batch_size, -1, self.num_heads, self.div_dimension
+        )  # B * K_len * H * D
+        value = self.query_projection(value).view(
+            batch_size, -1, self.num_heads, self.div_dimension
+        )  # B * V_len * H * D
 
-        query = (query.permute(2, 0, 1, 3).contiguous().
-                 view(batch_size * self.num_heads, -1, self.div_dimension))  # (B*N) * Q_len * D
-        key = (key.permute(2, 0, 1, 3).contiguous().
-               view(batch_size * self.num_heads, -1, self.div_dimension))  # (B*N) * K_len * D
-        value = (value.permute(2, 0, 1, 3).contiguous().
-                 view(batch_size * self.num_heads, -1, self.div_dimension))  # (B*N) * V_len * D
+        query = (
+            query.permute(2, 0, 1, 3)
+            .contiguous()
+            .view(batch_size * self.num_heads, -1, self.div_dimension)
+        )  # (B*N) * Q_len * D
+        key = (
+            key.permute(2, 0, 1, 3)
+            .contiguous()
+            .view(batch_size * self.num_heads, -1, self.div_dimension)
+        )  # (B*N) * K_len * D
+        value = (
+            value.permute(2, 0, 1, 3)
+            .contiguous()
+            .view(batch_size * self.num_heads, -1, self.div_dimension)
+        )  # (B*N) * V_len * D
 
-        attention_score = torch.bmm(query, key.transpose(1, 2)) / np.sqrt(self.div_dimension)
+        attention_score = torch.bmm(query, key.transpose(1, 2)) / np.sqrt(
+            self.div_dimension
+        )
 
         if mask is not None:
-            mask = mask.unsqueeze(1).repeat(1, self.num_heads, 1, 1)  # B * N * Q_len * K_len
-            attention_score.masked_fill_(mask.view(attention_score.size()), -float('Inf'))
+            mask = mask.unsqueeze(1).repeat(
+                1, self.num_heads, 1, 1
+            )  # B * N * Q_len * K_len
+            attention_score.masked_fill_(
+                mask.view(attention_score.size()), -float("Inf")
+            )
 
         attention_matrix = F.softmax(attention_score, dim=-1)
         context = torch.bmm(attention_matrix, value)
         context = context.view(self.num_heads, batch_size, -1, self.div_dimension)
-        context = (context.permute(1, 2, 0, 3).contiguous().
-                   view(batch_size, -1, self.num_heads * self.div_dimension))  # B * T * (N*D)
+        context = (
+            context.permute(1, 2, 0, 3)
+            .contiguous()
+            .view(batch_size, -1, self.num_heads * self.div_dimension)
+        )  # B * T * (N*D)
 
         """
         Expected input shape: [batch size, channels, height * width]
@@ -213,13 +251,15 @@ class AttentionPerceptron(nn.Module):
     Follows this strongly: https://github.com/huggingface/pytorch-image-models/blob/main/timm/layers/mlp.py
     """
 
-    def __init__(self,
-                 in_features: int,
-                 hidden_features: Optional[int],
-                 out_features: Optional[int],
-                 layer_norm: bool,
-                 bias: bool,
-                 dropout_prob: float):
+    def __init__(
+        self,
+        in_features: int,
+        hidden_features: Optional[int],
+        out_features: Optional[int],
+        layer_norm: bool,
+        bias: bool,
+        dropout_prob: float,
+    ):
         super().__init__()
 
         out_features = in_features if out_features is None else out_features
@@ -228,9 +268,11 @@ class AttentionPerceptron(nn.Module):
         drop_probs = to_2tuple(dropout_prob)
 
         self.fc1 = nn.Linear(in_features, hidden_features, bias=bias[0])
-        self.activation = nn.GELU(approximate='tanh')
+        self.activation = nn.GELU(approximate="tanh")
         self.drop1 = nn.Dropout(drop_probs[0])
-        self.norm = nn.LayerNorm(hidden_features) if layer_norm is True else nn.Identity()
+        self.norm = (
+            nn.LayerNorm(hidden_features) if layer_norm is True else nn.Identity()
+        )
         self.fc2 = nn.Linear(hidden_features, out_features, bias=bias[1])
         self.drop2 = nn.Dropout(drop_probs[1])
 
@@ -255,42 +297,53 @@ class DiffusionTransformer(nn.Module):
     A transformer block for diffusion models using adaptive layer norm zero (adaLN-Zero) conditioning
     """
 
-    def __init__(self,
-                 attention_embedding_size: int,
-                 attention_heads: int,
-                 hidden_size: int,
-                 mlp_ratio: float,
-                 layernorm_affine: bool,
-                 layernorm_epsilon: float,
-                 perceptron_dropout_rate: float,
-                 perceptron_bias: bool,
-                 perceptron_layernorm: bool):
+    def __init__(
+        self,
+        attention_embedding_size: int,
+        attention_heads: int,
+        hidden_size: int,
+        mlp_ratio: float,
+        layernorm_affine: bool,
+        layernorm_epsilon: float,
+        perceptron_dropout_rate: float,
+        perceptron_bias: bool,
+        perceptron_layernorm: bool,
+    ):
         super().__init__()
 
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=layernorm_affine, eps=layernorm_epsilon)
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=layernorm_affine, eps=layernorm_epsilon)
+        self.norm1 = nn.LayerNorm(
+            hidden_size, elementwise_affine=layernorm_affine, eps=layernorm_epsilon
+        )
+        self.norm2 = nn.LayerNorm(
+            hidden_size, elementwise_affine=layernorm_affine, eps=layernorm_epsilon
+        )
 
         self.attention = Attention(attention_embedding_size, attention_heads)
 
         self.perceptron_hidden_dim = int(hidden_size * mlp_ratio)
-        self.perceptron = AttentionPerceptron(in_features=hidden_size,
-                                              hidden_features=self.perceptron_hidden_dim,
-                                              out_features=hidden_size,
-                                              dropout_prob=perceptron_dropout_rate,
-                                              bias=perceptron_bias,
-                                              layer_norm=perceptron_layernorm)
+        self.perceptron = AttentionPerceptron(
+            in_features=hidden_size,
+            hidden_features=self.perceptron_hidden_dim,
+            out_features=hidden_size,
+            dropout_prob=perceptron_dropout_rate,
+            bias=perceptron_bias,
+            layer_norm=perceptron_layernorm,
+        )
 
         self.adaptiveLN = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
+            nn.SiLU(), nn.Linear(hidden_size, 6 * hidden_size, bias=True)
         )
 
     def forward(self, x, c):
-        attn_shift, attn_scale, attn_gate, mlp_shift, mlp_scale, mlp_gate = self.adaptiveLN(c).chunk(6, dim=1)
+        attn_shift, attn_scale, attn_gate, mlp_shift, mlp_scale, mlp_gate = (
+            self.adaptiveLN(c).chunk(6, dim=1)
+        )
         attn_input = modulate(self.norm1(x), attn_shift, attn_scale)
-        attn_out = x + attn_gate.unsqueeze(1) * self.attention(query=attn_input,
-                                                               key=attn_input,
-                                                               value=attn_input)[0]  # This is a tuple
+        attn_out = (
+            x
+            + attn_gate.unsqueeze(1)
+            * self.attention(query=attn_input, key=attn_input, value=attn_input)[0]
+        )  # This is a tuple
         perceptron_input = modulate(self.norm2(attn_out), mlp_shift, mlp_scale)
         x = x + mlp_gate.unsqueeze(1) * self.perceptron(perceptron_input)
 
@@ -308,16 +361,14 @@ class FinalLayer(nn.Module):
     The final DiT layer
     """
 
-    def __init__(self,
-                 hidden_size: int,
-                 patch_size: int,
-                 out_channels: int):
+    def __init__(self, hidden_size: int, patch_size: int, out_channels: int):
         super().__init__()
         self.layernorm = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.linear = nn.Linear(
+            hidden_size, patch_size * patch_size * out_channels, bias=True
+        )
         self.AdaptiveLN = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
+            nn.SiLU(), nn.Linear(hidden_size, 2 * hidden_size, bias=True)
         )
 
     def forward(self, x, c):
@@ -361,34 +412,38 @@ print("Label Embedder final shape: ", l_embedder(y).shape)
 z = l_embedder(y)
 
 # ===== Attention tester =====
-query = torch.rand((3, 16, 128))
-key = torch.rand((3, 16, 128))
-value = torch.rand((3, 16, 128))
+query = torch.rand((3, 784, 128))
+key = torch.rand((3, 784, 128))
+value = torch.rand((3, 784, 128))
 mask = torch.ones((3, 16, 16)).bool()
 
 attention_embedding_size = 128
-attention_heads = 8
+attention_heads = 2
 
 attention = Attention(attention_embedding_size, attention_heads)
-context, attention_matrix = attention(query, key, value, mask)
+context, attention_matrix = attention(query, key, value, mask=None)
 print("Context final shape: ", context.shape)
 print("Attention matrix final shape: ", attention_matrix.shape)
 
 # Regular comparison
-basic_attention = nn.MultiheadAttention(embed_dim=attention_embedding_size, num_heads=attention_heads)
+basic_attention = nn.MultiheadAttention(
+    embed_dim=attention_embedding_size, num_heads=attention_heads
+)
 basic_context, basic_weights = basic_attention(query, key, value)
 print("Basic attention final shape: ", basic_context.shape)
 
 # ===== Transformer Encoder tester =====
-DiT = DiffusionTransformer(attention_embedding_size=attention_embedding_size,
-                           attention_heads=attention_heads,
-                           hidden_size=hidden_size,
-                           mlp_ratio=1,
-                           layernorm_affine=False,
-                           layernorm_epsilon=1e-6,
-                           perceptron_dropout_rate=0.0,
-                           perceptron_bias=True,
-                           perceptron_layernorm=True)
+DiT = DiffusionTransformer(
+    attention_embedding_size=attention_embedding_size,
+    attention_heads=attention_heads,
+    hidden_size=hidden_size,
+    mlp_ratio=1,
+    layernorm_affine=False,
+    layernorm_epsilon=1e-6,
+    perceptron_dropout_rate=0.0,
+    perceptron_bias=True,
+    perceptron_layernorm=True,
+)
 
 nn.init.constant_(DiT.adaptiveLN[-1].weight, 0)
 nn.init.constant_(DiT.adaptiveLN[-1].bias, 0)
