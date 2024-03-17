@@ -1,5 +1,5 @@
 
-**Title**: Scalable Diffusion Models with Transformers
+# Scalable Diffusion Models with Transformers (NOT OFFICIAL)
 
 **Author(s)**: William Peebles and Saining Xie
 
@@ -7,7 +7,11 @@
 
 **Official code**: https://github.com/facebookresearch/DiT
 
-Difference between this and the official code:
 
-1. Complete re-write
-2. Added tensor shape documentation (i.e. shapes)
+
+## What makes this different?
+
+- Complete code rewrite from scratch
+- Modularized parts for better experimentation
+- Added expected tensor shape guides
+
