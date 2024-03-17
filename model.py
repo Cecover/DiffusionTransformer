@@ -42,8 +42,6 @@ to_2tuple = n_tuples(2)
 
 
 # ===== Embedding Layers =====
-
-
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timestep into a vector representation
@@ -101,6 +99,7 @@ class TimestepEmbedder(nn.Module):
         return t_embedding
 
 
+# ===== Label Embedding =====
 class LabelEmbedder(nn.Module):
     """
     Embeds class labels into vector representation.
@@ -146,8 +145,6 @@ class LabelEmbedder(nn.Module):
 
 
 # ===== Core Diffusion Transformer Model =====
-
-
 class Attention(nn.Module):
     """
     Modularized Attention mechanism, so it is easier to be modified on later uses
