@@ -499,87 +499,87 @@ class FinalLayer(nn.Module):
         return x
 
 
-# ===== Timestep embedder tester =====
-x = torch.rand((3,))
-hidden_size = 128
-frequency_size = 10000
-frequency_period = 10000
-bias = True
+# # ===== Timestep embedder tester =====
+# x = torch.rand((3,))
+# hidden_size = 128
+# frequency_size = 10000
+# frequency_period = 10000
+# bias = True
+#
+# # Function, init, and output
+# t_embedder = TimestepEmbedder(hidden_size, frequency_period, frequency_size, bias)
+# nn.init.normal_(t_embedder.perceptron[0].weight, std=0.02)
+# nn.init.normal_(t_embedder.perceptron[2].weight, std=0.02)
+# print("Timestep Embedder final shape: ", t_embedder(x).shape)
+#
+# t = t_embedder(x)
+#
+# # ===== Label embedder tester =====
+# y = torch.randint(low=1, high=999, size=(3,))
+# num_classes = 1000
+# dropout_prob = 0.1
+#
+# # Function, init, and output
+# l_embedder = LabelEmbedder(num_classes, hidden_size, dropout_prob)
+# nn.init.normal_(l_embedder.embedding_table.weight, std=0.02)
+# print("Label Embedder final shape: ", l_embedder(y).shape)
+# z = l_embedder(y)
+#
+# # ===== Attention tester =====
+# query = torch.rand((3, 784, 128))
+# key = torch.rand((3, 784, 128))
+# value = torch.rand((1, 3, 784, 128))
+# mask = torch.ones((3, 16, 16)).bool()
+#
+# attention_embedding_size = 128
+# attention_heads = 2
+#
+# attention = Attention(attention_embedding_size, attention_heads)
+# context, attention_matrix = attention(query, key, value, mask=None)
+# print("Context final shape: ", context.shape)
+# print("Attention matrix final shape: ", attention_matrix.shape)
+#
+# # Regular comparison
+# basic_attention = nn.MultiheadAttention(
+#     embed_dim=attention_embedding_size, num_heads=attention_heads
+# )
+# basic_context, basic_weights = basic_attention(query, key, value)
+# print("Basic attention final shape: ", basic_context.shape)
+#
+# # ===== Transformer Encoder tester =====
+# DiT = DiffusionTransformer(
+#     attention_embedding_size=attention_embedding_size,
+#     attention_heads=attention_heads,
+#     hidden_size=hidden_size,
+#     mlp_ratio=1,
+#     layernorm_affine=False,
+#     layernorm_epsilon=1e-6,
+#     perceptron_dropout_rate=0.0,
+#     perceptron_bias=True,
+#     perceptron_layernorm=True,
+# )
+#
+# nn.init.constant_(DiT.adaptiveLN[-1].weight, 0)
+# nn.init.constant_(DiT.adaptiveLN[-1].bias, 0)
+# c = t + z
+#
+# result = DiT(value, c)
+# print("Result final shape: ", result.shape)
+#
+# # ===== Final layer testing =====
+# patch_size = 8
+# out_channels = 4
+#
+# final = FinalLayer(hidden_size, patch_size, out_channels)
+# nn.init.constant_(final.AdaptiveLN[-1].weight, 0)
+# nn.init.constant_(final.AdaptiveLN[-1].bias, 0)
+# nn.init.constant_(final.linear.weight, 0)
+# nn.init.constant_(final.linear.bias, 0)
+#
+# print("Final shape: ", final(result, c).shape)
 
-# Function, init, and output
-t_embedder = TimestepEmbedder(hidden_size, frequency_period, frequency_size, bias)
-nn.init.normal_(t_embedder.perceptron[0].weight, std=0.02)
-nn.init.normal_(t_embedder.perceptron[2].weight, std=0.02)
-print("Timestep Embedder final shape: ", t_embedder(x).shape)
 
-t = t_embedder(x)
-
-# ===== Label embedder tester =====
-y = torch.randint(low=1, high=999, size=(3,))
-num_classes = 1000
-dropout_prob = 0.1
-
-# Function, init, and output
-l_embedder = LabelEmbedder(num_classes, hidden_size, dropout_prob)
-nn.init.normal_(l_embedder.embedding_table.weight, std=0.02)
-print("Label Embedder final shape: ", l_embedder(y).shape)
-z = l_embedder(y)
-
-# ===== Attention tester =====
-query = torch.rand((3, 784, 128))
-key = torch.rand((3, 784, 128))
-value = torch.rand((3, 784, 128))
-mask = torch.ones((3, 16, 16)).bool()
-
-attention_embedding_size = 128
-attention_heads = 2
-
-attention = Attention(attention_embedding_size, attention_heads)
-context, attention_matrix = attention(query, key, value, mask=None)
-print("Context final shape: ", context.shape)
-print("Attention matrix final shape: ", attention_matrix.shape)
-
-# Regular comparison
-basic_attention = nn.MultiheadAttention(
-    embed_dim=attention_embedding_size, num_heads=attention_heads
-)
-basic_context, basic_weights = basic_attention(query, key, value)
-print("Basic attention final shape: ", basic_context.shape)
-
-# ===== Transformer Encoder tester =====
-DiT = DiffusionTransformer(
-    attention_embedding_size=attention_embedding_size,
-    attention_heads=attention_heads,
-    hidden_size=hidden_size,
-    mlp_ratio=1,
-    layernorm_affine=False,
-    layernorm_epsilon=1e-6,
-    perceptron_dropout_rate=0.0,
-    perceptron_bias=True,
-    perceptron_layernorm=True,
-)
-
-nn.init.constant_(DiT.adaptiveLN[-1].weight, 0)
-nn.init.constant_(DiT.adaptiveLN[-1].bias, 0)
-c = t + z
-
-result = DiT(value, c)
-print("Result final shape: ", result.shape)
-
-# ===== Final layer testing =====
-patch_size = 8
-out_channels = 4
-
-final = FinalLayer(hidden_size, patch_size, out_channels)
-nn.init.constant_(final.AdaptiveLN[-1].weight, 0)
-nn.init.constant_(final.AdaptiveLN[-1].bias, 0)
-nn.init.constant_(final.linear.weight, 0)
-nn.init.constant_(final.linear.bias, 0)
-
-print("Final shape: ", final(result, c).shape)
-
-
-class DiffusionTransformer(nn.Module):
+class DiTNet(nn.Module):
     """
     A diffusion model with a Transformer backbone
     """
@@ -603,7 +603,7 @@ class DiffusionTransformer(nn.Module):
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
 
         self.x_embedder = PatchEmbed(
-            input_size, patch_size, self.in_channels, hidden_size, True, True, True
+            input_size, patch_size, self.in_channels, hidden_size, False, True, True
         )
         self.t_embedder = TimestepEmbedder(hidden_size, 10000, 256, True)
         self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
@@ -611,7 +611,7 @@ class DiffusionTransformer(nn.Module):
 
         # Using fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(
-            torch.zeros(1, self.num_patches, patch_size, hidden_size),
+            torch.zeros(1, self.num_patches, hidden_size),
             requires_grad=False,
         )
 
@@ -641,7 +641,7 @@ class DiffusionTransformer(nn.Module):
 
         # Initialize positional embedding (and freeze it)
 
-        positional_embedding = pos_embed_2D(self.pos_embed.shape[1],
+        positional_embedding = pos_embed_2D(self.pos_embed.shape[-1],
                                             int(self.x_embedder.num_patches ** 0.5),
                                             False,
                                             0)
@@ -688,17 +688,37 @@ class DiffusionTransformer(nn.Module):
 
         return image
 
+    def forward(self, x, t, y):
+        """
+        Forward pass of DiT
+        """
+        x = self.x_embedder(x) + self.pos_embed
+        t = self.t_embedder(t)
+        y = self.y_embedder(y)
+        c = t + y
+
+        for block in self.attn_blocks:
+            x = block(x, c)
+
+        x = self.finallayer(x, c)
+        x = self.unpatch(x)
+
+        return x
 
 
+model = DiTNet(depth=12,
+               hidden_size=1152,
+               patch_size=8,
+               attn_heads=12,
+               input_size=32,
+               in_channels=4,
+               attn_mlp_ratio=4.0,
+               class_dropout_prob=0.1,
+               num_classes=1000,
+               learn_sigma=True)
 
-
-
-
-
-
-
-
-
-
-
-
+x = torch.rand((3,))
+y = torch.randint(low=1, high=999, size=(3,))
+value = torch.rand((1, 4, 32, 32))
+result = model(value, x, y)
+print(result.shape)
