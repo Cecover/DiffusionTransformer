@@ -1,6 +1,6 @@
 """
 Created on: 2024, March 11th
-Author: 'Cecover' on Github
+Author: 'Cecover' on GitHub
 
 Title: Stable Diffusion using Transformer for U-net replacement
 Framework used: Pytorch
