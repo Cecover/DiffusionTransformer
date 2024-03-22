@@ -4,23 +4,29 @@ Author: 'Cecover' on GitHub
 
 Title: Stable Diffusion using Transformer for U-net replacement
 Framework used: PyTorch
-Code reference: https://github.com/facebookresearch/DiT/blob/main/models.py
+Code credits (sorted):
+    - https://github.com/facebookresearch/DiT/blob/main/models.py
+    - https://github.com/huggingface/pytorch-image-models/blob/main/timm/layers/helpers.py
+    - https://github.com/pprp/timm/blob/master/timm/layers/patch_embed.py
+    - https://github.com/facebookresearch/mae/blob/main/util/pos_embed.py
+    - https://github.com/sooftware/attentions/blob/master/attentions.py
+    - https://github.com/huggingface/pytorch-image-models/blob/main/timm/layers/mlp.py
+
 """
 
 import math
 import numpy as np
 import collections.abc
+from typing import Optional, Tuple
+from itertools import repeat
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from torch import _assert
 
-from typing import Optional, Tuple
-from itertools import repeat
 
-
+# ===== Helper functions =====
 def modulate(tensor, shift, scale):
     return tensor * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
@@ -34,50 +40,60 @@ def n_tuples(n):
     return parse
 
 
-to_2tuple = n_tuples(2)
+to_2tuple = n_tuples(2)  # Used for lower modules
 
 
 class PatchEmbed(nn.Module):
     """
-    2D Image to patch embedding
+    2D Image to patch embeddings
 
-    Code reference: https://github.com/pprp/timm/blob/master/timm/layers/patch_embed.py
+    Use case:
+
+        self.x_embedder = PatchEmbed(
+                input_size=32,
+                patch_size=8,
+                in_channels=4,
+                embedding_dimension=768,
+                use_norm=False,
+                use_flatten=True,
+                use_bias=True
+            )
+
+    Input: A tensor of [batch_size, channels, height, width]
+    Returns: A tensor of [batch_size, patches_count, embedding_dimension]
     """
 
     def __init__(
-            self,
-            image_size: int,
-            patch_size: int,
-            in_channels: int,
-            embed_dimension: int,
-            use_layernorm: bool,
-            use_flatten: bool,
-            use_bias: bool,
+        self,
+        image_size: int,  # Obvious
+        patch_size: int,  # Obvious
+        in_channels: int,  # Defaults to 4 on paper, but differ from use cases
+        embedding_dimension: int,  # Practically the hidden dimension for the layer normalization
+        use_norm: bool = False,  # Obvious, defaults to False on official implementation
+        use_flatten: bool = True,  # Obvious, defaults to True on official implementation
+        use_bias: bool = True,  # Obvious, defaults to True. This is just to switch it on, need to initialize below
     ):
         super().__init__()
 
-        image_size = to_2tuple(image_size)
-        patch_size = to_2tuple(patch_size)
-
-        self.image_size = image_size
-        self.patch_size = patch_size
+        # Images stuffs
+        self.image_size = to_2tuple(image_size)
+        self.patch_size = to_2tuple(patch_size)
         self.grid_size = (
-            image_size[0] // patch_size[0],
-            image_size[1] // patch_size[1],
+            self.image_size[0] // self.patch_size[0],
+            self.image_size[1] // self.patch_size[1],
         )
         self.num_patches = self.grid_size[0] * self.grid_size[1]
-        self.use_flatten = use_flatten
 
+        # Other functions
+        self.use_flatten = use_flatten
         self.projection = nn.Conv2d(
             in_channels,
-            embed_dimension,
+            embedding_dimension,
             kernel_size=patch_size,
             stride=patch_size,
             bias=use_bias,
         )
-        self.layernorm = (
-            nn.LayerNorm(embed_dimension) if use_layernorm else nn.Identity()
-        )
+        self.norm = nn.LayerNorm(embedding_dimension) if use_norm else nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
@@ -92,82 +108,104 @@ class PatchEmbed(nn.Module):
         )
 
         x = self.projection(x)
-
         if self.use_flatten:
             x = x.flatten(2).transpose(1, 2)  # BCHW -> BNC
-        x = self.layernorm(x)
+        x = self.norm(x)
 
         return x
 
 
-# ===== Sine/Cosine positional embedding =====
-
-"""
-Code reference: https://github.com/facebookresearch/mae/blob/main/util/pos_embed.py
-"""
-
-
-def pos_embed_2D(embed_dim: int,
-                 grid_size: int,
-                 class_token: bool,
-                 extra_tokens: int):
+def pos_embed_2D(
+    embed_dim: int,  # Hidden dimension size (needs to match the global hidden dimension size)
+    grid_size: int,  # Halved number of patches; int(num_patches**0.5)
+    class_token: bool = False,  # Defaults to False on official implementation
+    extra_tokens: int = 0,  # Defaults to zero on official implementation
+) -> torch.Tensor:
     """
-    grid_size: int, size of the height and width
+    Sine-Cosine positional encoding (Sinusoidal)
 
-    returns positional embedding [grid_size * grid_size, embed_dim] w/token, or
-                                 [1 + grid_size * grid_size, embed_dim] w/o token
+    Note: This code combines all three functions into one single function
+
+    Use case:
+
+        self.pos_embed = nn.Parameter(
+                torch.zeros(1, self.num_patches, hidden_size),
+                requires_grad=False
+            )
+
+        positional_embedding = pos_embed_2D(
+                self.pos_embed.shape[-1], int(self.x_embedder.num_patches**0.5), False, 0
+            )
+
+        self.pos_embed.data.copy_(
+            torch.from_numpy(positional_embedding).float().unsqueeze(0)  # This is to freeze the layers
+        )
+
+    Input: Positional encoding parameter of zeros with shape [1, num_patches, hidden_size] (Input shape w/ batch of 1)
+    Returns: a Sinusoidal positional embedding tensor of [grid_size * grid_size, embed_dim] w/token, or
+                                                         [1 + grid_size * grid_size, embed_dim] w/o token
     """
 
+    # Initialize grids
     grid_height = np.arange(grid_size, dtype=np.float32)
     grid_width = np.arange(grid_size, dtype=np.float32)
-    grid = np.stack(np.meshgrid(grid_width, grid_height), axis=0)  # width goes first
+    grid = np.stack(np.meshgrid(grid_width, grid_height), axis=0)  # Width goes first
     reshaped_grid = grid.reshape([2, 1, grid_size, grid_size])
-
-    """
-    1D position embedding
-    """
 
     assert embed_dim % 2 == 0
 
+    # Where the magic happens
     halved_embed_dim = embed_dim // 2  # Using half dimension to encode grid
     omega = np.arange(halved_embed_dim // 2, dtype=np.float32)
-    omega /= halved_embed_dim / 2.
-    omega = 1. / 10000 ** omega  # (D/2,)
-
-    # This is where things are going tricky, since we're combining all functions into one singular function
+    omega /= halved_embed_dim / 2.0
+    omega = 1.0 / 10000**omega  # (D/2,)
 
     grid_0 = reshaped_grid[0].reshape(-1)  # (M, )
     grid_1 = reshaped_grid[1].reshape(-1)  # (M, )
-    out_0 = np.einsum('m, d -> md', grid_0, omega)  # (M, D/2), outer product
-    out_1 = np.einsum('m, d -> md', grid_1, omega)  # (M, D/2), outer product
+    out_0 = np.einsum("m, d -> md", grid_0, omega)  # (M, D/2), outer product
+    out_1 = np.einsum("m, d -> md", grid_1, omega)  # (M, D/2), outer product
 
     sin_0 = np.sin(out_0)
     sin_1 = np.sin(out_1)
     cos_0 = np.cos(out_0)
     cos_1 = np.cos(out_1)
 
+    # Concatenate both embeddings
     embedding_0 = np.concatenate([sin_0, cos_0], axis=1)
     embedding_1 = np.concatenate([sin_1, cos_1], axis=1)
     final_embedding = np.concatenate([embedding_0, embedding_1], axis=1)
 
+    # Adding extra tokens
     if class_token and extra_tokens > 0:
-        final_embedding = np.concatenate([np.zeros([extra_tokens, embed_dim]), final_embedding], axis=0)
+        final_embedding = np.concatenate(
+            [np.zeros([extra_tokens, embed_dim]), final_embedding], axis=0
+        )
 
     return final_embedding
 
 
-# ===== Embedding Layers =====
+# ===== Main functions =====
 class TimestepEmbedder(nn.Module):
     """
     Embeds scalar timestep into a vector representation
+
+    Use case:
+
+        self.t_embedder = TimestepEmbedder(timestep_hidden_size=1152,
+                                           frequency_max_period=10000,
+                                           frequency_embedding_size=256,
+                                           perceprtron_bias=True)
+
+    Input: A tensor of [batch_size, ]
+    Returns: A tensor of [batch_size, hidden_size]
     """
 
     def __init__(
-            self,
-            timestep_hidden_size: int,
-            frequency_max_period: int,
-            frequency_embedding_size: int,
-            perceptron_bias: bool,
+        self,
+        timestep_hidden_size: int,  # Hidden size, follows global hidden size
+        frequency_max_period: int,  # Frequency max period, defaults to 10000
+        frequency_embedding_size: int,  # Does not follow global hidden size
+        perceptron_bias: bool,  # Obvious
     ):
         super().__init__()
 
@@ -201,29 +239,36 @@ class TimestepEmbedder(nn.Module):
 
         return embedding
 
-    def forward(self, tensor: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         t_frequency = self.time_stepper(
-            tensor, self.frequency_embedding_size, self.frequency_max_period
+            x, self.frequency_embedding_size, self.frequency_max_period
         )
         t_embedding = self.perceptron(t_frequency)
-
-        """
-        Expected input shape: [tensor, ]
-        Expected output shape: [tensor, hidden_size]
-        Assuming tensor has shape of (48, ) and hidden size of 1152, the size will be [48, 1152]
-        """
 
         return t_embedding
 
 
-# ===== Label Embedding =====
 class LabelEmbedder(nn.Module):
     """
     Embeds class labels into vector representation.
     Code also handles label dropout for classifier-free guidance
+
+    Use case:
+
+        self.y_embedder = LabelEmbedder(num_classes = 1000,
+                                        hidden_size = 1152,
+                                        class_dropout_prob = 0.1)
+
+    Input: A tensor of [batch_size, ]
+    Returns: A tensor of [batch_size, hidden_size]
     """
 
-    def __init__(self, num_classes: int, hidden_size: int, dropout_prob: float):
+    def __init__(
+        self,
+        num_classes: int,  # Number of classes of the dataset, defaults to 1000 since ImageNet
+        hidden_size: int,  # Follows global hidden size
+        dropout_prob: float,  # Dropout probability, defaults to 0.1
+    ):
         super().__init__()
 
         use_config_embedding = dropout_prob > 0
@@ -252,12 +297,6 @@ class LabelEmbedder(nn.Module):
 
         embeddings = self.embedding_table(labels)
 
-        """
-        Expected input shape: [tensor, ]
-        Expected output shape: [tensor, hidden_size]
-        Assuming tensor has shape of (48, ) and hidden size of 1152, the size will be [48, 1152]
-        """
-
         return embeddings
 
 
@@ -267,14 +306,29 @@ class Attention(nn.Module):
     Modularized Attention mechanism, so it is easier to be modified on later uses
 
     Implementation: Multi-head scaled dot product attention - Vaswani et al. in 2017
-    Code reference: https://github.com/sooftware/attentions/blob/master/attentions.py
+
+    Use case:
+
+        self.attention = Attention(attention_dimension=1152,
+                                   attention_heads=8)
+
+    Input: Three tensors of [batch size, token size, hidden dimension] and an optional mask tensor
+    Returns: A tensor of [batch size, token size, hidden dimension]
+
+    The Output of this function requires having [0] on the back since it was a tuple object.
+        - [0] returns the actual end value
+        - [1] returns the attention matrix
     """
 
-    def __init__(self, attention_dimension: int, attention_heads: int):
+    def __init__(
+        self,
+        attention_dimension: int,  # Follows global hidden size
+        attention_heads: int,  # Number of attention heads
+    ):
         super().__init__()
 
         assert (
-                attention_dimension % attention_heads == 0
+            attention_dimension % attention_heads == 0
         ), "Attention dimension and head size must be divisible!"
 
         self.num_heads = attention_heads
@@ -291,12 +345,13 @@ class Attention(nn.Module):
         )
 
     def forward(
-            self,
-            query: torch.Tensor,
-            key: torch.Tensor,
-            value: torch.Tensor,
-            mask: Optional[torch.Tensor] = None,
+        self,
+        query: torch.Tensor,
+        key: torch.Tensor,
+        value: torch.Tensor,
+        mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+
         batch_size = value.size(0)
 
         query = self.query_projection(query).view(
@@ -346,15 +401,6 @@ class Attention(nn.Module):
             .view(batch_size, -1, self.num_heads * self.div_dimension)
         )  # B * T * (N*D)
 
-        """
-        Expected input shape: [batch size, token size, hidden dimension]
-        Expected output shape: [batch size, token size, hidden dimension]
-        
-        Output of this needs to have [0] on the back since it was a tuple object. 
-        [0] returns the actual end value
-        [1] returns the attention matrix
-        """
-
         return context, attention_matrix
 
 
@@ -362,17 +408,29 @@ class AttentionPerceptron(nn.Module):
     """
     This needs to be separated since there is research regarding better alternatives to the usual MLP
 
-    Follows this strongly: https://github.com/huggingface/pytorch-image-models/blob/main/timm/layers/mlp.py
+    Use case:
+
+        self.perceptron = AttentionPerceptron(
+            in_features=1152,
+            hidden_features=768,
+            out_features=1152,
+            layer_norm=True,
+            bias=True,
+            dropout_prob=0.1,
+        )
+
+    Input: A tensor of [batch size, token size, hidden dimension] from Attention
+    Returns: A tensor of [batch size, token size, hidden dimension]
     """
 
     def __init__(
-            self,
-            in_features: int,
-            hidden_features: Optional[int],
-            out_features: Optional[int],
-            layer_norm: bool,
-            bias: bool,
-            dropout_prob: float,
+        self,
+        in_features: int,
+        hidden_features: Optional[int],
+        out_features: Optional[int],
+        use_norm: bool,
+        bias: bool,
+        dropout_prob: float,
     ):
         super().__init__()
 
@@ -384,13 +442,11 @@ class AttentionPerceptron(nn.Module):
         self.fc1 = nn.Linear(in_features, hidden_features, bias=bias[0])
         self.activation = nn.GELU(approximate="tanh")
         self.drop1 = nn.Dropout(drop_probs[0])
-        self.norm = (
-            nn.LayerNorm(hidden_features) if layer_norm is True else nn.Identity()
-        )
+        self.norm = nn.LayerNorm(hidden_features) if use_norm is True else nn.Identity()
         self.fc2 = nn.Linear(hidden_features, out_features, bias=bias[1])
         self.drop2 = nn.Dropout(drop_probs[1])
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.fc1(x)
         x = self.activation(x)
         x = self.drop1(x)
@@ -398,30 +454,48 @@ class AttentionPerceptron(nn.Module):
         x = self.fc2(x)
         x = self.drop2(x)
 
-        """
-        Expected input shape: [batch size, token size, hidden dimension]
-        Expected output shape: [batch size, token size, hidden dimension]
-        """
-
         return x
 
 
 class DiffusionTransformer(nn.Module):
     """
     A transformer block for diffusion models using adaptive layer norm zero (adaLN-Zero) conditioning
+
+    Use case:
+
+        self.attn_blocks = nn.ModuleList(
+            [
+                DiffusionTransformer(
+                    attention_embedding_size=1152,
+                    attention_heads=8,
+                    hidden_size=1152,
+                    mlp_ratio=attn_mlp_ratio,
+                    layernorm_affine=False,
+                    layernorm_epsilon=1e-6,
+                    perceptron_dropout_rate=0.0,
+                    perceptron_bias=True,
+                    perceptron_layernorm=True,
+                )
+                for _ in range(depth)
+            ]
+        )
+
+
+    Input: Follows Attention input
+    Returns:
     """
 
     def __init__(
-            self,
-            attention_embedding_size: int,
-            attention_heads: int,
-            hidden_size: int,
-            mlp_ratio: float,
-            layernorm_affine: bool,
-            layernorm_epsilon: float,
-            perceptron_dropout_rate: float,
-            perceptron_bias: bool,
-            perceptron_layernorm: bool,
+        self,
+        attention_embedding_size: int,
+        attention_heads: int,
+        hidden_size: int,
+        mlp_ratio: float,
+        layernorm_affine: bool,
+        layernorm_epsilon: float,
+        perceptron_dropout_rate: float,
+        perceptron_bias: bool,
+        perceptron_layernorm: bool,
     ):
         super().__init__()
 
@@ -441,7 +515,7 @@ class DiffusionTransformer(nn.Module):
             out_features=hidden_size,
             dropout_prob=perceptron_dropout_rate,
             bias=perceptron_bias,
-            layer_norm=perceptron_layernorm,
+            use_norm=perceptron_layernorm,
         )
 
         self.adaptiveLN = nn.Sequential(
@@ -454,9 +528,9 @@ class DiffusionTransformer(nn.Module):
         )
         attn_input = modulate(self.norm1(x), attn_shift, attn_scale)
         attn_out = (
-                x
-                + attn_gate.unsqueeze(1)
-                * self.attention(query=attn_input, key=attn_input, value=attn_input)[0]
+            x
+            + attn_gate.unsqueeze(1)
+            * self.attention(query=attn_input, key=attn_input, value=attn_input)[0]
         )  # This is a tuple
         perceptron_input = modulate(self.norm2(attn_out), mlp_shift, mlp_scale)
         x = x + mlp_gate.unsqueeze(1) * self.perceptron(perceptron_input)
@@ -499,103 +573,23 @@ class FinalLayer(nn.Module):
         return x
 
 
-# # ===== Timestep embedder tester =====
-# x = torch.rand((3,))
-# hidden_size = 128
-# frequency_size = 10000
-# frequency_period = 10000
-# bias = True
-#
-# # Function, init, and output
-# t_embedder = TimestepEmbedder(hidden_size, frequency_period, frequency_size, bias)
-# nn.init.normal_(t_embedder.perceptron[0].weight, std=0.02)
-# nn.init.normal_(t_embedder.perceptron[2].weight, std=0.02)
-# print("Timestep Embedder final shape: ", t_embedder(x).shape)
-#
-# t = t_embedder(x)
-#
-# # ===== Label embedder tester =====
-# y = torch.randint(low=1, high=999, size=(3,))
-# num_classes = 1000
-# dropout_prob = 0.1
-#
-# # Function, init, and output
-# l_embedder = LabelEmbedder(num_classes, hidden_size, dropout_prob)
-# nn.init.normal_(l_embedder.embedding_table.weight, std=0.02)
-# print("Label Embedder final shape: ", l_embedder(y).shape)
-# z = l_embedder(y)
-#
-# # ===== Attention tester =====
-# query = torch.rand((3, 784, 128))
-# key = torch.rand((3, 784, 128))
-# value = torch.rand((1, 3, 784, 128))
-# mask = torch.ones((3, 16, 16)).bool()
-#
-# attention_embedding_size = 128
-# attention_heads = 2
-#
-# attention = Attention(attention_embedding_size, attention_heads)
-# context, attention_matrix = attention(query, key, value, mask=None)
-# print("Context final shape: ", context.shape)
-# print("Attention matrix final shape: ", attention_matrix.shape)
-#
-# # Regular comparison
-# basic_attention = nn.MultiheadAttention(
-#     embed_dim=attention_embedding_size, num_heads=attention_heads
-# )
-# basic_context, basic_weights = basic_attention(query, key, value)
-# print("Basic attention final shape: ", basic_context.shape)
-#
-# # ===== Transformer Encoder tester =====
-# DiT = DiffusionTransformer(
-#     attention_embedding_size=attention_embedding_size,
-#     attention_heads=attention_heads,
-#     hidden_size=hidden_size,
-#     mlp_ratio=1,
-#     layernorm_affine=False,
-#     layernorm_epsilon=1e-6,
-#     perceptron_dropout_rate=0.0,
-#     perceptron_bias=True,
-#     perceptron_layernorm=True,
-# )
-#
-# nn.init.constant_(DiT.adaptiveLN[-1].weight, 0)
-# nn.init.constant_(DiT.adaptiveLN[-1].bias, 0)
-# c = t + z
-#
-# result = DiT(value, c)
-# print("Result final shape: ", result.shape)
-#
-# # ===== Final layer testing =====
-# patch_size = 8
-# out_channels = 4
-#
-# final = FinalLayer(hidden_size, patch_size, out_channels)
-# nn.init.constant_(final.AdaptiveLN[-1].weight, 0)
-# nn.init.constant_(final.AdaptiveLN[-1].bias, 0)
-# nn.init.constant_(final.linear.weight, 0)
-# nn.init.constant_(final.linear.bias, 0)
-#
-# print("Final shape: ", final(result, c).shape)
-
-
 class DiTNet(nn.Module):
     """
     A diffusion model with a Transformer backbone
     """
 
     def __init__(
-            self,
-            input_size: int,
-            patch_size: int,
-            in_channels: int,
-            hidden_size: int,
-            depth: int,
-            attn_heads: int,
-            attn_mlp_ratio: int,
-            class_dropout_prob: float,
-            num_classes: int,
-            learn_sigma: bool,
+        self,
+        input_size: int,
+        patch_size: int,
+        in_channels: int,
+        hidden_size: int,
+        depth: int,
+        attn_heads: int,
+        attn_mlp_ratio: int,
+        class_dropout_prob: float,
+        num_classes: int,
+        learn_sigma: bool,
     ):
         super().__init__()
 
@@ -609,25 +603,27 @@ class DiTNet(nn.Module):
         self.y_embedder = LabelEmbedder(num_classes, hidden_size, class_dropout_prob)
         self.num_patches = self.x_embedder.num_patches
 
-        # Using fixed sin-cos embedding:
         self.pos_embed = nn.Parameter(
             torch.zeros(1, self.num_patches, hidden_size),
             requires_grad=False,
         )
 
-        self.attn_blocks = nn.ModuleList([
-            DiffusionTransformer(
-                attention_embedding_size=hidden_size,
-                attention_heads=attn_heads,
-                hidden_size=hidden_size,
-                mlp_ratio=attn_mlp_ratio,
-                layernorm_affine=False,
-                layernorm_epsilon=1e-6,
-                perceptron_dropout_rate=0.0,
-                perceptron_bias=True,
-                perceptron_layernorm=True,
-            ) for _ in range(depth)
-        ])
+        self.attn_blocks = nn.ModuleList(
+            [
+                DiffusionTransformer(
+                    attention_embedding_size=hidden_size,
+                    attention_heads=attn_heads,
+                    hidden_size=hidden_size,
+                    mlp_ratio=attn_mlp_ratio,
+                    layernorm_affine=False,
+                    layernorm_epsilon=1e-6,
+                    perceptron_dropout_rate=0.0,
+                    perceptron_bias=True,
+                    perceptron_layernorm=True,
+                )
+                for _ in range(depth)
+            ]
+        )
         self.finallayer = FinalLayer(hidden_size, patch_size, self.out_channels)
 
     def init_weights(self):
@@ -641,15 +637,18 @@ class DiTNet(nn.Module):
 
         # Initialize positional embedding (and freeze it)
 
-        positional_embedding = pos_embed_2D(self.pos_embed.shape[-1],
-                                            int(self.x_embedder.num_patches ** 0.5),
-                                            False,
-                                            0)
-        self.pos_embed.data.copy_(torch.from_numpy(positional_embedding).float().unsqueeze(0))
+        positional_embedding = pos_embed_2D(
+            self.pos_embed.shape[-1], int(self.x_embedder.num_patches**0.5), False, 0
+        )
+        self.pos_embed.data.copy_(
+            torch.from_numpy(positional_embedding).float().unsqueeze(0)
+        )
 
         # Initializing patch_embed-like nn.Linear
         projection_weights = self.x_embedder.projection.weight.data
-        nn.init.xavier_uniform_(projection_weights.view([projection_weights.shape[0], -1]))
+        nn.init.xavier_uniform_(
+            projection_weights.view([projection_weights.shape[0], -1])
+        )
         nn.init.constant_(self.x_embedder.projection.bias, 0)
 
         # Initialize label embedding table
@@ -683,8 +682,10 @@ class DiTNet(nn.Module):
         assert h * w == x.shape[1]
 
         x = x.reshape(shape=(x.shape[0], h, w, patch_size, patch_size, channels))
-        x = torch.einsum('bhwpqc->bchpwq', x)
-        image = torch.reshape(x, shape=(x.shape[0], channels, h * patch_size, w * patch_size))
+        x = torch.einsum("bhwpqc->bchpwq", x)
+        image = torch.reshape(
+            x, shape=(x.shape[0], channels, h * patch_size, w * patch_size)
+        )
 
         return image
 
@@ -706,19 +707,21 @@ class DiTNet(nn.Module):
         return x
 
 
-model = DiTNet(depth=12,
-               hidden_size=1152,
-               patch_size=8,
-               attn_heads=12,
-               input_size=32,
-               in_channels=4,
-               attn_mlp_ratio=4.0,
-               class_dropout_prob=0.1,
-               num_classes=1000,
-               learn_sigma=True)
+model = DiTNet(
+    depth=12,
+    hidden_size=1152,
+    patch_size=8,
+    attn_heads=12,
+    input_size=32,
+    in_channels=4,
+    attn_mlp_ratio=4.0,
+    class_dropout_prob=0.1,
+    num_classes=1000,
+    learn_sigma=True,
+)
 
 x = torch.rand((3,))
 y = torch.randint(low=1, high=999, size=(3,))
-value = torch.rand((1, 4, 32, 32))
+value = torch.rand((3, 4, 32, 32))
 result = model(value, x, y)
 print(result.shape)
