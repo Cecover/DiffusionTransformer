@@ -10,7 +10,7 @@ Code reference: - https://github.com/facebookresearch/DiT/blob/main/train.py (or
 Difference between this and referenced code:
 
 1. Written from scratch
-2. Optimized for single GPU training
+2. General code cleanup
 """
 
 # ===== General Imports =====
