@@ -1,6 +1,8 @@
 
 # Scalable Diffusion Models with Transformers (NOT OFFICIAL)
 
+**This repo is not accepting pull requests! Sorry!**
+
 **Author(s)**: William Peebles and Saining Xie
 
 **Paper**: https://arxiv.org/abs/2212.09748
