@@ -2,7 +2,7 @@
 Created on: 2024, March 11th
 Author: 'Cecover' on GitHub
 
-Title: Stable Diffusion using Transformer for U-net replacement
+Title: Stable Diffusion using Model for U-net replacement
 Framework used: PyTorch
 Code credits (sorted):
     - https://github.com/facebookresearch/DiT/blob/main/models.py
@@ -308,7 +308,7 @@ class LabelEmbedder(nn.Module):
         return embeddings
 
 
-# ===== Core Diffusion Transformer Model =====
+# ===== Core Diffusion Model Model =====
 class Attention(nn.Module):
     """
     Modularized Attention mechanism, so it is easier to be modified on later uses
@@ -610,7 +610,7 @@ class FinalLayer(nn.Module):
 
 class DiTNet(nn.Module):
     """
-    A diffusion model with a Transformer backbone
+    A diffusion model with a Model backbone
     """
 
     def __init__(
