@@ -2,7 +2,7 @@
 Created on: 2024, March 11th
 Author: 'Cecover' on GitHub
 
-Title: Stable Diffusion using Model for U-net replacement
+Title: Scalable Diffusion Models with Transformers
 Framework used: PyTorch
 Code credits (sorted):
     - https://github.com/facebookresearch/DiT/blob/main/models.py

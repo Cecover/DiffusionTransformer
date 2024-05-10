@@ -2,7 +2,7 @@
 Created on: 2024, March 11th
 Author: 'Cecover' on GitHub
 
-Title: Stable Diffusion using Model for U-net replacement
+Title: Scalable Diffusion Models with Transformers
 Framework used: Pytorch
 Code reference: - https://github.com/facebookresearch/DiT/blob/main/train.py (original)
                 - https://github.com/chuanyangjin/fast-DiT/blob/main/train.py (re-written)
@@ -226,7 +226,7 @@ def main(args):
     ema_model = deepcopy(model).to(device)
     requires_grad(ema_model, False)
 
-    
+
 
 
 
