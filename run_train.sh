@@ -1,0 +1,1 @@
+python train.py --use_DPP False --dataset_dir datasets/ --results_dir results/ --image_size 256 --num_classes 1000 --num_epochs 200 --batch_size 256 --num_workers 4

@@ -16,8 +16,10 @@ import enum
 import math
 import torch
 import numpy as np
+from typing import Optional
 
 from .diffusion_utils import discrete_gaussian_likelihood, kl_score
+from tqdm.auto import tqdm
 
 
 def mean_flat(x: torch.Tensor) -> torch.Tensor:
@@ -71,7 +73,7 @@ def _warmup_beta(beta_start, beta_end, num_timesteps, warmup_fraction):
     return betas
 
 
-def get_named_beta_schedules(schedule_name, alpha_bar, num_timesteps, max_beta=0.999):
+def get_named_beta_schedules(schedule_name, num_timesteps, alpha_bar: Optional, max_beta=0.999, ):
     """
     Get a pre-defined beta schedule for the given name.
 
@@ -150,7 +152,7 @@ class Diffusion:
 
         # Calculations for posterior q(x_{t-1} | x_t, x_0)
         self.posterior_variance = (
-            betas * (1.0 - self.alphas_prev_cumproduct) / (1.0 - self.alphas_cumproduct)
+                betas * (1.0 - self.alphas_prev_cumproduct) / (1.0 - self.alphas_cumproduct)
         )
 
         # Log calculation is clipped due to posterior variance is 0 at the start of diffusion chain
@@ -161,33 +163,33 @@ class Diffusion:
         )
 
         self.posterior_mean_coefficient1 = (
-            betas
-            * np.sqrt(self.alphas_prev_cumproduct)
-            / (1.0 - self.alphas_cumproduct)
+                betas
+                * np.sqrt(self.alphas_prev_cumproduct)
+                / (1.0 - self.alphas_cumproduct)
         )
 
         self.posterior_mean_coefficient2 = (
-            (1.0 - self.alphas_prev_cumproduct)
-            * np.sqrt(alphas)
-            / (1.0 - self.alphas_cumproduct)
+                (1.0 - self.alphas_prev_cumproduct)
+                * np.sqrt(alphas)
+                / (1.0 - self.alphas_cumproduct)
         )
 
     def _predict_x_start_from_eps(self, x_t, t, eps):
         assert x_t.shape == eps.shape
 
         return (
-            _extract_into_tensor(self.sqrt_recip_alphas_cumproduct, t, x_t.shape) * x_t
-            - _extract_into_tensor(
-                self.sqrt_recip_minus_one_alphas_cumproduct, t, x_t.shape
-            )
-            * eps
+                _extract_into_tensor(self.sqrt_recip_alphas_cumproduct, t, x_t.shape) * x_t
+                - _extract_into_tensor(
+            self.sqrt_recip_minus_one_alphas_cumproduct, t, x_t.shape
+        )
+                * eps
         )
 
     def _predict_eps_from_x_start(self, x_t, t, pred_x_start):
 
         return (
-            _extract_into_tensor(self.sqrt_recip_alphas_cumproduct, t, x_t.shape) * x_t
-            - pred_x_start
+                _extract_into_tensor(self.sqrt_recip_alphas_cumproduct, t, x_t.shape) * x_t
+                - pred_x_start
         ) / _extract_into_tensor(
             self.sqrt_recip_minus_one_alphas_cumproduct, t, x_t.shape
         )
@@ -202,7 +204,7 @@ class Diffusion:
 
         gradient = cond_fn(x, t, **model_kwargs)
         new_mean = (
-            p_mean_var["mean"].float() * p_mean_var["variance"] * gradient.float()
+                p_mean_var["mean"].float() * p_mean_var["variance"] * gradient.float()
         )
 
         return new_mean
@@ -229,8 +231,8 @@ class Diffusion:
         """
 
         mean = (
-            _extract_into_tensor(self.sqrt_alphas_cumproduct, timestep, x_start.shape)
-            * x_start
+                _extract_into_tensor(self.sqrt_alphas_cumproduct, timestep, x_start.shape)
+                * x_start
         )
         variance = _extract_into_tensor(
             1.0 - self.alphas_prev_cumproduct, timestep, x_start.shape
@@ -250,12 +252,12 @@ class Diffusion:
         assert noise.shape == x_start.shape
 
         return (
-            _extract_into_tensor(self.sqrt_alphas_cumproduct, timestep, x_start.shape)
-            * x_start
-            + _extract_into_tensor(
-                self.sqrt_minus_one_alphas_cumproduct, timestep, x_start.shape
-            )
-            * noise
+                _extract_into_tensor(self.sqrt_alphas_cumproduct, timestep, x_start.shape)
+                * x_start
+                + _extract_into_tensor(
+            self.sqrt_minus_one_alphas_cumproduct, timestep, x_start.shape
+        )
+                * noise
         )
 
     def q_posterior_mean_variance(self, x_start, x_t, timestep):
@@ -266,12 +268,12 @@ class Diffusion:
         assert x_start.shape == x_t.shape
 
         posterior_mean = (
-            _extract_into_tensor(self.posterior_mean_coefficient1, timestep, x_t.shape)
-            * x_start
-            + _extract_into_tensor(
-                self.posterior_mean_coefficient2, timestep, x_t.shape
-            )
-            * x_t
+                _extract_into_tensor(self.posterior_mean_coefficient1, timestep, x_t.shape)
+                * x_start
+                + _extract_into_tensor(
+            self.posterior_mean_coefficient2, timestep, x_t.shape
+        )
+                * x_t
         )
 
         posterior_variance = _extract_into_tensor(
@@ -282,22 +284,22 @@ class Diffusion:
         )
 
         assert (
-            posterior_mean.shape[0]
-            == posterior_variance.shape[0]
-            == posterior_clipped_log_variance.shape[0]
-            == x_start.shape[0]
+                posterior_mean.shape[0]
+                == posterior_variance.shape[0]
+                == posterior_clipped_log_variance.shape[0]
+                == x_start.shape[0]
         )
 
         return posterior_mean, posterior_variance, posterior_clipped_log_variance
 
     def p_mean_variance(
-        self,
-        model,
-        x,
-        timestep,
-        clip_denoised=True,
-        denoised_fn=None,
-        model_kwargs=None,
+            self,
+            model,
+            x,
+            timestep,
+            clip_denoised=True,
+            denoised_fn=None,
+            model_kwargs=None,
     ):
         """
         Applying the model to get p(x_{t-1}|x_t), as well as a prediction of the initial x; x_0.
@@ -366,10 +368,10 @@ class Diffusion:
         model_mean, _, _ = self.q_posterior_mean_variance(pred_x_start, x, timestep)
 
         assert (
-            model_mean.shape
-            == model_log_variance.shape
-            == pred_x_start.shape
-            == x.shape
+                model_mean.shape
+                == model_log_variance.shape
+                == pred_x_start.shape
+                == x.shape
         )
 
         return {
@@ -379,3 +381,111 @@ class Diffusion:
             "pred_x_start": pred_x_start,
             "extra": extra,
         }
+
+    def p_sample(
+            self,
+            model,
+            x,
+            t,
+            clip_denoised=True,
+            denoised_fn=None,
+            cond_fn=None,
+            model_kwargs=None,
+    ):
+        """
+        Samples x_{t-1} from the model at given timestep.
+        """
+
+        output = self.p_mean_variance(
+            model,
+            x,
+            t,
+            clip_denoised=clip_denoised,
+            denoised_fn=denoised_fn,
+            model_kwargs=model_kwargs,
+        )
+
+        noise = torch.randn_like(x)
+        non_zero_mask = (
+            (t != 0).float().view(-1, *([1] * (len(x.shape) - 1)))
+        )  # No noise on timestep 0
+
+        if cond_fn is not None:
+            output["mean"] = self.condition_mean(cond_fn, output, x, t, model_kwargs)
+        sample = (
+                output["mean"]
+                + non_zero_mask * torch.exp(0.5 * output["log_variance"]) * noise
+        )
+
+        return {"sample": sample, "pred_x_start": output["pred_x_start"]}
+
+    def p_sample_progressive(
+            self,
+            model,
+            shape,
+            noise=None,
+            clip_denoised=True,
+            denoised_fn=None,
+            cond_fn=None,
+            model_kwargs=None,
+            verbose=False,
+    ):
+
+        device = next(model.parameters()).device
+        assert isinstance(shape, (tuple, list))
+
+        if noise is not None:
+            image = noise
+        else:
+            image = torch.randn(*shape, device=device)
+        indices = list(range(self.num_timesteps))[::-1]
+
+        if verbose:
+            indices = tqdm(indices)
+
+        for i in indices:
+            t = torch.tensor([i] * shape[0], device=device)
+
+            with torch.no_grad():
+                out = self.p_sample(
+                    model,
+                    image,
+                    t,
+                    clip_denoised=clip_denoised,
+                    denoised_fn=denoised_fn,
+                    cond_fn=cond_fn,
+                    model_kwargs=model_kwargs,
+                )
+                yield out
+                image = out["sample"]
+
+    def p_sample_progressive_looped(
+            self,
+            model,
+            shape,
+            noise=None,
+            clip_denoised=True,
+            denoised_fn=None,
+            cond_fn=None,
+            model_kwargs=None,
+            verbose=False,
+    ):
+        """
+        Generate samples from the model.
+        """
+
+        final = None
+
+        for sample in self.p_sample_progressive(
+                model,
+                shape,
+                noise,
+                clip_denoised=True,
+                denoised_fn=None,
+                cond_fn=None,
+                model_kwargs=None,
+                verbose=False,
+        ):
+            final = sample
+
+        return final["sample"]

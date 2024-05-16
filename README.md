@@ -3,6 +3,8 @@
 
 **This repo is not accepting pull requests! Sorry!**
 
+**Current code state: Fixed the training script (UNTESTED)**
+
 **Author(s)**: William Peebles and Saining Xie
 
 **Paper**: https://arxiv.org/abs/2212.09748
@@ -16,4 +18,5 @@
 - Complete code rewrite from scratch
 - Modularized parts for better experimentation
 - Added expected tensor shape guides
+- Upgraded training script
 
