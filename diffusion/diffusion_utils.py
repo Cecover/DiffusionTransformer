@@ -54,7 +54,7 @@ def approximate_std_cdf(x):
     )
 
 
-def continuous_gaussian_likelihood(x, *, means, log_scales):
+def continuous_gaussian_log_likelihood(x, *, means, log_scales):
     """
     Computes the log-likelihood of a continuous Gaussian distribution.
     """
@@ -69,7 +69,7 @@ def continuous_gaussian_likelihood(x, *, means, log_scales):
     return log_probabilities
 
 
-def discrete_gaussian_likelihood(x, *, means, log_scales):
+def discrete_gaussian_log_likelihood(x, *, means, log_scales):
     """
     Computes the log-likelihood of a Gaussian distribution, while discretizing to a given image
     """

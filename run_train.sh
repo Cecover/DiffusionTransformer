@@ -1,1 +1,1 @@
-python train.py --use_DPP False --dataset_dir datasets/ --results_dir results/ --image_size 256 --num_classes 1000 --num_epochs 200 --batch_size 256 --num_workers 4
+python DiffusionTransformer/train.py --experiment_name DiffusionTransformerInitial --dataset_path Dataset/imagenette2/train --experiments_path DiffusionTransformer/results --image_size 256 --num_classes 10 --num_epochs 100 --num_workers 1

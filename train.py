@@ -7,7 +7,6 @@ Framework used: Pytorch
 Code reference: - https://github.com/facebookresearch/DiT/blob/main/train.py (original)
                 - https://github.com/chuanyangjin/fast-DiT/blob/main/train.py (re-written)
                 - https://github.com/chuanyangjin/fast-DiT/blob/main/train_options/train_original.py (re-written)
-                - https://github.com/chuanyangjin/fast-DiT/blob/main/train_options/train_baseline.py (re-written)
 
 Difference between this and referenced code:
 1. Written from scratch
@@ -16,13 +15,12 @@ Difference between this and referenced code:
 4. Complete move to HuggingFace Accelerate
 
 Current TODO's:
-1. Upgrading the optimizer
+1. Finishing the rest of the code
 2. Clean up and restructure code
 3. Test code
 
 Some comments:
 1. This code would only use ImageNet dataset and its variants
-2. No MPS support
 """
 
 # ===== General Imports =====
@@ -41,7 +39,8 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.utils.data import Dataset, DataLoader
-from torchvision import datasets, transforms
+from torchvision import transforms
+from torchvision.datasets import ImageFolder
 from diffusers import AutoencoderKL
 from accelerate import Accelerator
 
@@ -50,8 +49,12 @@ from model import DiTNet
 from diffusion import create_diffusion
 
 # ===== Floating variables and helper functions =====
-# Using pre-used flags
-mp.set_start_method('spawn')
+# Multiprocessing
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
@@ -114,6 +117,9 @@ def create_logger(logging_dir: str):
 class CustomDataset(Dataset):
     """
     Creates a custom dataset, which can be loaded using PyTorch dataloaders.
+
+    The current implementation takes imagenette (https://github.com/fastai/imagenette), thus it would be 'kinda'
+    specialized, but it can be replaced with other datasets.
     """
 
     def __init__(self, features_dir: str, labels_dir: str, transforms):
@@ -144,26 +150,32 @@ class CustomDataset(Dataset):
 
 
 # Dataset transformations
-def center_crop_arr(pil_image, image_size):
-    """
-    https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
-    """
-    while min(*pil_image.size) >= 2 * image_size:
+
+class center_crop_array(torch.nn.Module):
+    def forward(self, pil_image):
+        """
+        https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
+
+        I modified this function, so it would work with multiprocessing dataloader.
+        Due to the nature of the code, this needs to be set MANUALLY until I can fix this.
+        But again, it WILL work with multiprocessing.
+        """
+        while min(*pil_image.size) >= 2 * 256:
+            pil_image = pil_image.resize(
+                tuple(x // 2 for x in pil_image.size), resample=Image.BOX
+            )
+
+        scale = 256 / min(*pil_image.size)
         pil_image = pil_image.resize(
-            tuple(x // 2 for x in pil_image.size), resample=Image.BOX
+            tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
         )
 
-    scale = image_size / min(*pil_image.size)
-    pil_image = pil_image.resize(
-        tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
-    )
-
-    arr = np.array(pil_image)
-    crop_y = (arr.shape[0] - image_size) // 2
-    crop_x = (arr.shape[1] - image_size) // 2
-    return Image.fromarray(
-        arr[crop_y: crop_y + image_size, crop_x: crop_x + image_size]
-    )
+        arr = np.array(pil_image)
+        crop_y = (arr.shape[0] - 256) // 2
+        crop_x = (arr.shape[1] - 256) // 2
+        return Image.fromarray(
+            arr[crop_y: crop_y + 256, crop_x: crop_x + 256]
+        )
 
 
 # ===== Main Training Loop =====
@@ -208,7 +220,7 @@ def main(args):
         patch_size=8,
         in_channels=4,
         num_classes=1000,
-        global_hidden_size=1152,
+        global_hidden_dimension=1152,
         transformer_depth=28,
         transformer_attn_heads=8,
         transformer_mlp_ratio=4.0,
@@ -244,18 +256,17 @@ def main(args):
     # Dataset loading and transformations
     transform = transforms.Compose(
         [
-            transforms.Lambda(
-                lambda pil_image: center_crop_arr(pil_image, args.image_size)
-            ),
+            center_crop_array(),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(imagenet_mean, imagenet_std, inplace=True),
         ]
     )
 
-    features_dir = f"{args.dataset_image_path}"
-    labels_dir = f"{args.dataset_label_path}"
-    dataset = CustomDataset(features_dir, labels_dir, transform)
+    features_dir = f"{args.dataset_path}"
+    # labels_dir = f"{args.dataset_label_path}"
+    # dataset = CustomDataset(features_dir, labels_dir, transform)
+    dataset = ImageFolder(features_dir, transform=transform)
 
     loader = DataLoader(
         dataset,
@@ -268,7 +279,7 @@ def main(args):
 
     if accelerator.is_main_process:
         try:
-            print(f"Used dataset: {args.dataset} with length of {len(dataset):,}")
+            print(f"Used dataset: {args.dataset_path} with length of {len(dataset):,}")
         except TypeError:
             pass
 
@@ -284,9 +295,9 @@ def main(args):
     running_loss = 0
     start_time = time()
 
-    logger.info(f"Starting training for {args.epochs} epochs...")
+    logger.info(f"Starting training for {args.num_epochs} epochs...")
 
-    for epoch in range(args.epochs):
+    for epoch in range(args.num_epochs):
         logger.info(f"Beginning epoch {epoch}...")
 
         for x, y in loader:
@@ -296,7 +307,7 @@ def main(args):
             with torch.no_grad():
                 # Map the input images into the latent space + normalizing latents
                 x = vae.encode(x).latent_dist.sample().mul_(0.18215)
-            t = torch.randint(0, diffusion.num_classes, (x.shape[0],), device=device)
+            t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
 
             model_kwargs = dict(y=y)
             loss_dict = diffusion.training_step(model, x, t, model_kwargs)
@@ -352,13 +363,12 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment_name", type=str, default="DiffusionTransformer")
-    parser.add_argument("--dataset_image_path", type=str, default="features")
-    parser.add_argument("--dataset_labels_path", type=str, default="labels")
+    parser.add_argument("--dataset_path", type=str, default="features")
     parser.add_argument("--experiments_path", type=str, default="results")
     parser.add_argument("--image_size", type=int, choices=[256, 512], default=256)
     parser.add_argument("--num_classes", type=int, default=1000)
     parser.add_argument("--num_epochs", type=int, default=200)
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--global_seed", type=int, default=3043)  # Easter egg
     parser.add_argument("--num_workers", type=int, default=4)
     parser.add_argument("--precision", type=str)
