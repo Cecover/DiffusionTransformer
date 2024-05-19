@@ -7,6 +7,7 @@ Framework used: Pytorch
 Code reference: - https://github.com/facebookresearch/DiT/blob/main/train.py (original)
                 - https://github.com/chuanyangjin/fast-DiT/blob/main/train.py (re-written)
                 - https://github.com/chuanyangjin/fast-DiT/blob/main/train_options/train_original.py (re-written)
+                - https://github.com/crowsonkb/k-diffusion
 
 Difference between this and referenced code:
 1. Written from scratch
@@ -15,26 +16,29 @@ Difference between this and referenced code:
 4. Complete move to HuggingFace Accelerate
 
 Current TODO's:
-1. Finishing the rest of the code
-2. Clean up and restructure code
-3. Test code
+1. Clean up and restructure code
+2. Add better model logging system
+3. Make it more "verbose"
 
 Some comments:
 1. This code would only use ImageNet dataset and its variants
 """
 
-# ===== General Imports =====
+# ===== Imports =====
+
+# General imports (loggers, argparse, tqdm)
 import os
-import wandb
-import logging
+import logging  # Creates a log file just in case the code went into flames
 import argparse
 import numpy as np
 from glob import glob
 from PIL import Image
 from time import time
+from tqdm import tqdm  # Main logging for training performance
 from copy import deepcopy
 from collections import OrderedDict
 
+# Model related imports (PyTorch, Accelerate, Diffusers)
 import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
@@ -44,11 +48,12 @@ from torchvision.datasets import ImageFolder
 from diffusers import AutoencoderKL
 from accelerate import Accelerator
 
-# Created imports
+# Created module imports
 from model import DiTNet
 from diffusion import create_diffusion
 
 # ===== Floating variables and helper functions =====
+
 # Multiprocessing
 try:
     mp.set_start_method('spawn', force=True)
@@ -113,113 +118,86 @@ def create_logger(logging_dir: str):
     return logger
 
 
-# Creating a custom dataset
-class CustomDataset(Dataset):
-    """
-    Creates a custom dataset, which can be loaded using PyTorch dataloaders.
-
-    The current implementation takes imagenette (https://github.com/fastai/imagenette), thus it would be 'kinda'
-    specialized, but it can be replaced with other datasets.
-    """
-
-    def __init__(self, features_dir: str, labels_dir: str, transforms):
-        self.features_dir = features_dir
-        self.labels_dir = labels_dir
-        self.features_files = sorted(os.listdir(features_dir))
-        self.labels_files = sorted(os.listdir(labels_dir))
-        self.transforms = transforms
-
-    def __len__(self):
-        assert len(self.features_files) == len(
-            self.labels_files
-        ), "Number of features and labels must be the same!"
-
-        return len(self.features_files)  # Simply returns the length of the dataset
-
-    def __getitem__(self, idx):
-        feature_file = self.features_files[idx]
-        label_file = self.labels_files[idx]
-
-        features = torch.load(os.path.join(self.features_dir, feature_file))
-        labels = torch.load(os.path.join(self.labels_dir, label_file))
-
-        if self.transforms:
-            features = self.transforms(features)
-
-        return features, labels
-
-
 # Dataset transformations
-
 class center_crop_array(torch.nn.Module):
+    # We need to do this because somehow turning it into a function wouldn't work when using multiprocessing.
+
+    def __init__(self, image_size):
+        super().__init__()
+
+        self.image_size = image_size
+
     def forward(self, pil_image):
         """
         https://github.com/openai/guided-diffusion/blob/8fb3ad9197f16bbc40620447b2742e13458d2831/guided_diffusion/image_datasets.py#L126
 
         I modified this function, so it would work with multiprocessing dataloader.
-        Due to the nature of the code, this needs to be set MANUALLY until I can fix this.
-        But again, it WILL work with multiprocessing.
+        Now we don't need to fix the value manually/editing the source code.
         """
-        while min(*pil_image.size) >= 2 * 256:
+        while min(*pil_image.size) >= 2 * self.image_size:
             pil_image = pil_image.resize(
                 tuple(x // 2 for x in pil_image.size), resample=Image.BOX
             )
 
-        scale = 256 / min(*pil_image.size)
+        scale = self.image_size / min(*pil_image.size)
         pil_image = pil_image.resize(
             tuple(round(x * scale) for x in pil_image.size), resample=Image.BICUBIC
         )
 
         arr = np.array(pil_image)
-        crop_y = (arr.shape[0] - 256) // 2
-        crop_x = (arr.shape[1] - 256) // 2
+        crop_y = (arr.shape[0] - self.image_size) // 2
+        crop_x = (arr.shape[1] - self.image_size) // 2
+
         return Image.fromarray(
-            arr[crop_y: crop_y + 256, crop_x: crop_x + 256]
+            arr[crop_y: crop_y + self.image_size, crop_x: crop_x + self.image_size]
         )
 
 
 # ===== Main Training Loop =====
 def main(args):
     """
-    The main trainer. Only works with a GPU!
+    The main trainer. Only works with a GPU/MPS!
     The trainer now uses HF's Accelerate instead of DDP, which means I wrote the same code twice.
+
+    But again, it can run on my MacBook so whatever.
+
+    !!UNTESTED FOR NVIDIA GPU!!
     """
 
     # Setting up the accelerator
     accelerator = Accelerator(gradient_accumulation_steps=1, mixed_precision=args.precision)
     ensure_distributed()
     device = accelerator.device
-    print(f'Process {accelerator.process_index} using device: {device}', flush=True)
     accelerator.wait_for_everyone()
 
     if accelerator.is_main_process:
         os.makedirs(args.experiments_path, exist_ok=True)  # To make the results directory
         experiment_index = len(glob(f"{args.experiments_path}/*"))
         model_string_name = args.experiment_name
-        experiment_dir = (
-            f"{args.experiments_path}/{experiment_index:03d}-{model_string_name}"
-        )
+        experiment_dir = f"{args.experiments_path}/{experiment_index:03d}-{model_string_name}"
         checkpoint_dir = f"{experiment_dir}/checkpoints"
         os.makedirs(checkpoint_dir, exist_ok=True)
         logger = create_logger(experiment_dir)
-        print(f'World size: {accelerator.num_processes}', flush=True)
-        print(f'Batch size: {args.batch_size * accelerator.num_processes}', flush=True)
+
+        # Wall of loggers
         logger.info(f"Experiment directory created at {experiment_dir}")
+        logger.info(f"Checkpoint directory created at {checkpoint_dir}")
+        logger.info(f"Process {accelerator.process_index} using device: {device}")
+        logger.info(
+            f"World size: {accelerator.num_processes} and Batch size: {args.batch_size * accelerator.num_processes}")
 
     # Setting up the model and dataset
     # Latent image sizing
-    assert (
-            args.image_size % 8 == 0
-    ), "Image size must be divisible by 8 for the VAE encoder!"
+    assert (args.image_size % 8 == 0), "Image size must be divisible by 8 for the VAE encoder!"
     latent_size = args.image_size // 8
 
     # Loading the transformer and EMA model (parameterization is already done inside the model)
     # model = DiTNet(input_size=latent_size, num_classes=args.num_classes).to(device)
     model = DiTNet(
-        input_size=32,
+        input_size=latent_size,
         patch_size=8,
         in_channels=4,
-        num_classes=1000,
+        num_classes=args.num_classes,
         global_hidden_dimension=1152,
         transformer_depth=28,
         transformer_attn_heads=8,
@@ -232,19 +210,8 @@ def main(args):
     requires_grad(ema_model, False)
 
     # Loading the diffusion model along with the latent encoder
-    diffusion = create_diffusion(
-        timestep_respacing=""
-    )  # Default would be 1000 steps, with linear noise scheduling
+    diffusion = create_diffusion(timestep_respacing="")  # Default would be 1000 steps, with linear noise scheduling
     vae = AutoencoderKL.from_pretrained(f"stabilityai/sd-vae-ft-ema").to(device)
-
-    # Initializing wandb, so we can actually see what is going on during training.
-    # It will be ON by default.
-    log_config = vars(args)
-    log_config["parameters"] = sum(p.numel() for p in model.parameters())
-    wandb.init(project="DiffusionTransformer",
-               config=log_config,
-               save_code=True)
-    wandb.watch(model)
 
     if accelerator.is_main_process:
         logger.info(f"DiT Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -254,18 +221,18 @@ def main(args):
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=0)
 
     # Dataset loading and transformations
+    center_crop = center_crop_array(args.image_size)
     transform = transforms.Compose(
         [
-            center_crop_array(),
+            center_crop,
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(imagenet_mean, imagenet_std, inplace=True),
         ]
     )
 
+    # We're using Imagenet, thus we don't need to make a Custom DataLoader or such.
     features_dir = f"{args.dataset_path}"
-    # labels_dir = f"{args.dataset_label_path}"
-    # dataset = CustomDataset(features_dir, labels_dir, transform)
     dataset = ImageFolder(features_dir, transform=transform)
 
     loader = DataLoader(
@@ -279,7 +246,7 @@ def main(args):
 
     if accelerator.is_main_process:
         try:
-            print(f"Used dataset: {args.dataset_path} with length of {len(dataset):,}")
+            logger.info(f"Used dataset: {args.dataset_path} with length of {len(dataset):,}")
         except TypeError:
             pass
 
@@ -300,7 +267,8 @@ def main(args):
     for epoch in range(args.num_epochs):
         logger.info(f"Beginning epoch {epoch}...")
 
-        for x, y in loader:
+        for i, data in enumerate(tqdm(loader)):
+            x, y = data
             x = x.to(device)
             y = y.to(device)
 
@@ -310,7 +278,7 @@ def main(args):
             t = torch.randint(0, diffusion.num_timesteps, (x.shape[0],), device=device)
 
             model_kwargs = dict(y=y)
-            loss_dict = diffusion.training_step(model, x, t, model_kwargs)
+            loss_dict = diffusion.training_losses(model, x, t, model_kwargs)
             loss = loss_dict["loss"].mean()
 
             optimizer.zero_grad()
@@ -318,14 +286,17 @@ def main(args):
             optimizer.step()
             update_EMA(ema_model, model)
 
-            # Log-loss values
+            # Update values
             running_loss += loss.item()
             log_steps += 1
             train_steps += 1
 
-            if train_steps % args.log_every == 0:
-                # Measure training speed
-                torch.cuda.synchronize()
+            if train_steps % len(dataset) == 0:
+                # Measuring training speed and such
+
+                if device == "cuda":
+                    torch.cuda.synchronize()
+
                 end_time = time()
                 steps_per_second = log_steps / (end_time - start_time)
 
@@ -334,9 +305,7 @@ def main(args):
                 avg_loss = avg_loss.item() / accelerator.num_processes
 
                 logger.info(
-                    f"(Train step={train_steps:07d}) "
-                    f"Train loss={avg_loss:.4f}, "
-                    f"Train steps/second: {steps_per_second:.2f}"
+                    f"Train step: {train_steps}, Train loss: {avg_loss:.4f}, Train steps/second: {steps_per_second:.2f}"
                 )
 
                 # Resetting the monitoring variables
@@ -345,7 +314,7 @@ def main(args):
                 start_time = time()
 
             # Checkpointing
-            if train_steps % args.save_every == 0 and train_steps > 0:
+            if train_steps % args.ckpt_every == 0 and train_steps > 0:
                 checkpoint = {
                     "Model": model.module.state_dict(),
                     "EMA_model": ema_model.state_dict(),

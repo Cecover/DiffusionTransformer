@@ -1,1 +1,1 @@
-python DiffusionTransformer/train.py --experiment_name DiffusionTransformerInitial --dataset_path Dataset/imagenette2/train --experiments_path DiffusionTransformer/results --image_size 256 --num_classes 10 --num_epochs 100 --num_workers 1
+python DiffusionTransformer/train.py --experiment_name DiffusionTransformerInitial --dataset_path Dataset/imagenette-smaller/train --experiments_path DiffusionTransformer/results --image_size 256 --num_classes 5 --num_epochs 100 --num_workers 1

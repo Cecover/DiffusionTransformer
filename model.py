@@ -256,9 +256,8 @@ class TimestepEmbedder(nn.Module):
             -math.log(max_period)
             * torch.arange(start=0, end=half, dtype=torch.float32)
             / half
-        )
-        frequency.to(device=tensor.device)  # MUST
-        args = tensor[:, None].float() * frequency[None]
+        ).to(device=tensor.device)  # MUST
+        args = tensor[:, None].to(torch.float) * frequency[None]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
 
         if embedding_size % 2:
